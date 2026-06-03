@@ -1,0 +1,30 @@
+{
+  "name": "universal_subtitler",
+  "version": "1.0.0",
+  "description": "Автоматическое скачивание видео (VK/YouTube), распознавание речи с помощью Whisper и перевод субтитров на любой язык.",
+  "author": "ZiraelM",
+  "entry_point": "skills.universal_subtitler.__init__",
+  "commands": [
+    {
+      "intent": "create_subtitles",
+      "phrases": [
+        "сделай субтитры для видео",
+        "скачай видео и распознай текст",
+        "переведи видео",
+        "сделай русские субтитры для"
+      ],
+      "arguments": {
+        "source": {
+          "type": "string",
+          "description": "Ссылка на видео в ВК/YouTube или локальный путь к файлу",
+          "required": true
+        },
+        "to_lang": {
+          "type": "string",
+          "description": "Язык перевода (ru, en, de, es). По умолчанию ru",
+          "required": false
+        }
+      }
+    }
+  ]
+}
