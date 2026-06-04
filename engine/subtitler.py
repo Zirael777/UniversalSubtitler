@@ -1,7 +1,7 @@
 import ffmpeg
 from faster_whisper import WhisperModel
 import os
-from deep_translator import MyMemoryTranslator # Переключаемся на бесплатный контекстный MyMemory
+from deep_translator import GoogleTranslator # Переключились на сверхнадежный GoogleTranslator
 
 class SubtitlerEngine:
     def __init__(self, model_size="small", device="cpu"):
@@ -34,18 +34,26 @@ class SubtitlerEngine:
         return processed_segments, info.language
 
     def save_as_srt(self, segments, output_path, translate_to=None, original_lang="en"):
-        """Сохраняет субтитры. Если нужно — делает качественный контекстный перевод."""
+        """Сохраняет субтитры. Если нужно — делает качественный автоматический перевод."""
         
+        # Безопасно обрезаем коды языков (из en-US делаем en)
+        if original_lang:
+            original_lang = original_lang[:2].lower()
+        if translate_to:
+            translate_to = translate_to[:2].lower()
+
+        translator = None
+        should_translate = False
+
+        # Если целевой язык передан и он отличается от оригинала — включаем переводчик
         if translate_to and original_lang != translate_to:
-            print(f"[*] Перевожу субтитры ('{original_lang}' -> '{translate_to}') через умный движок MyMemory...")
+            print(f"[*] Перевожу субтитры ('{original_lang}' -> '{translate_to}') через движок Google...")
             try:
-                # MyMemory работает бесплатно и без ключей, понимает кино-контекст
-                translator = MyMemoryTranslator(source=original_lang, target=translate_to)
+                translator = GoogleTranslator(source=original_lang, target=translate_to)
+                should_translate = True
             except Exception as e:
                 print(f"[!] Ошибка инициализации переводчика: {e}. Сохраняю оригинал.")
-                translate_to = None
-        else:
-            translate_to = None
+                should_translate = False
 
         with open(output_path, "w", encoding="utf-8") as f:
             for i, segment in enumerate(segments):
@@ -58,11 +66,13 @@ class SubtitlerEngine:
                 if not text or (segment.end - segment.start) > 30: 
                     continue
                     
-                if translate_to:
+                # Переводим строку, если переводчик готов
+                if should_translate and translator:
                     try:
                         text = translator.translate(text)
-                    except Exception:
-                        pass # Если одна строка сбоит, оставляем оригинал
+                    except Exception as e:
+                        # Если одна строка сбоит (например, сетевой сбой), оставляем оригинал
+                        pass
                 
                 f.write(f"{i+1}\n{start} --> {end}\n{text}\n\n")
 
