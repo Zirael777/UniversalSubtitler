@@ -1,95 +1,120 @@
 import os
+import sys
 import argparse
 import subprocess
+import json
+import urllib.request
 from engine.subtitler import SubtitlerEngine
 
-def cleanup():
-    # Удаляем только временный аудиофайл, чтобы не засорять диск.
-    # Видеофайл теперь НЕ удаляем, так как он сохраняется под своим настоящим именем для просмотра.
-    if os.path.exists("temp_audio.wav"): 
-        os.remove("temp_audio.wav")
-
-def download_video(url):
-    print(f"[*] Получаю информацию о видео и скачиваю: {url}")
-    
-    # Шаблон имени файла: оригинальное название.расширение
-    output_template = "%(title)s.%(ext)s"
-    
-    # Запрашиваем имя файла. 
-    # Добавляем errors="replace", чтобы скрипт никогда не падал из-за кодировок в Windows
-    result = subprocess.run(
-        ["yt-dlp", "-o", output_template, "--get-filename", url], 
-        check=True, 
-        capture_output=True, 
-        text=True,
-        encoding="utf-8",
-        errors="replace"  # Заменяет кривые символы, если utf-8 сбоит в консоли
-    )
-    
-    # Очищаем имя от лишних пробелов и переносов строки
-    filename = result.stdout.strip() if result.stdout else ""
-    
-    # Если из-за специфики терминала имя прочитать не удалось, даем резервное имя,
-    # чтобы не падать с ошибкой AttributeError
-    if not filename or "" in filename:
-        print("[!] Внимание: Обнаружены проблемы с кодировкой названия. Использую резервное имя файла.")
-        # Запрашиваем только расширение, чтобы знать во что качать (mp4/mkv)
-        ext_result = subprocess.run(
-            ["yt-dlp", "--get-filename", "-o", "%(ext)s", url],
-            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace"
-        )
-        ext = ext_result.stdout.strip() if ext_result.stdout else "mp4"
-        filename = f"downloaded_movie.{ext}"
-        output_template = filename
-
-    # Скачиваем сам фильм под полученным именем
-    subprocess.run(["yt-dlp", "-o", output_template, url], check=True)
-    
-    return filename
-
-def process_media(source, model_size="small", language=None, target_lang="ru"):
-    if source.startswith("http"):
-        file_path = download_video(source)
-    else:
-        file_path = source
-
-    if not os.path.exists(file_path):
-        print(f"Ошибка: Файл {file_path} не найден.")
-        return
-
-    engine = SubtitlerEngine(model_size=model_size)
-    
-    # Получаем имя файла без расширения (например, "Красивое название фильма")
-    base_name = os.path.splitext(file_path)[0]
-    output_srt_orig = base_name + ".srt"
-    output_srt_trans = f"{base_name}_{target_lang}.srt"
-    
-    print(f"[*] Обработка файла: {file_path}")
+def get_user_country():
+    """Автоматически определяет код страны пользователя по его IP"""
     try:
-        # 1. Распознаем оригинальную речь
+        url = "http://ip-api.com/json/"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return data.get("countryCode", "UNKNOWN")
+    except Exception:
+        return "UNKNOWN"
+
+def handle_input_source(source):
+    # Шаг 1. Проверяем, является ли источник локальным файлом
+    if os.path.exists(source) and os.path.isfile(source):
+        print(f"[*] Обнаружен локальный файл: {source}")
+        return source
+
+    # Шаг 2. Если это ссылка, проверяем геопозицию
+    is_youtube = "youtube.com" in source or "youtu.be" in source
+    is_ru_platform = "rutube.ru" in source or "vk.com" in source
+
+    if is_youtube or is_ru_platform:
+        print("[*] Проверяю доступность платформы для вашего региона...")
+        country = get_user_country()
+        
+        if is_youtube and country == "RU":
+            print("\n" + "="*70)
+            print("[!] Ошибка: В вашем регионе прямая загрузка с YouTube ограничена.")
+            print("[*] Решение: Скачайте видеофайл самостоятельно (через VPN/браузер)")
+            print("    и запустите скрипт, указав путь к файлу вместо ссылки.")
+            print("    Пример: py main.py \"C:\\Downloads\\video.mp4\"")
+            print("="*70 + "\n")
+            sys.exit(1)
+            
+        if is_ru_platform and country != "RU" and country != "UNKNOWN":
+            print("\n" + "="*70)
+            print(f"[!] Ошибка: Вы находитесь в регионе ({country}).")
+            print("[!] Прямая загрузка с ВК и Rutube за пределами РФ часто блокируется.")
+            print("[*] Решение: Используйте российский VPN для работы со ссылкой")
+            print("    или скачайте файл вручную и передайте локальный путь.")
+            print("="*70 + "\n")
+            sys.exit(1)
+
+    # Шаг 3. Скачивание через чистый yt-dlp
+    print(f"[*] Получаю информацию о видео и скачиваю по ссылке: {source}")
+    output_template = "downloaded_movie.%(ext)s"
+    
+    cmd_download = [
+        "yt-dlp", 
+        "-o", output_template,
+        "--no-playlist",
+        "--merge-output-format", "mp4"
+    ]
+    
+    if is_ru_platform:
+        cmd_download.append("--no-proxy")
+        
+    cmd_download.append(source)
+    
+    try:
+        print("[*] Запускаю скачивание через yt-dlp...")
+        subprocess.run(cmd_download, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[!] Ошибка при скачивании видео: {e}")
+        sys.exit(1)
+        
+    for ext in ["mp4", "mkv", "webm"]:
+        filename = f"downloaded_movie.{ext}"
+        if os.path.exists(filename):
+            return filename
+        
+    print("[!] Ошибка: Скачанный файл не найден!")
+    sys.exit(1)
+
+def process_media(source, language=None, target_lang="ru"):
+    file_path = handle_input_source(source)
+    
+    print(f"[*] Файл готов к работе: {file_path}")
+    print("[*] Запускаю извлечение аудио и генерацию субтитров через Whisper...")
+    
+    try:
+        engine = SubtitlerEngine(model_size="small")
+        base_name = os.path.splitext(file_path)[0]
+        output_srt_orig = base_name + ".srt"
+        output_srt_trans = f"{base_name}_{target_lang}.srt"
+
+        # 1. Распознавание оригинала
         segments, detected_lang = engine.transcribe(file_path, language=language)
         
-        # 2. Сохраняем оригинал под именем фильма (например, "Название_фильма.srt")
-        print(f"[*] Сохраняю оригинальные субтитры ({detected_lang})...")
+        # 2. Сохранение оригинала
         engine.save_as_srt(segments, output_srt_orig, translate_to=None)
-        print(f"[+] Оригинал сохранен в: {output_srt_orig}")
+        print(f"[+] Создан оригинальный файл субтитров: {output_srt_orig}")
         
-        # 3. Переводим на язык, выбранный пользователем (например, "Название_фильма_ru.srt")
+        # 3. Перевод (если целевой язык отличается)
         if target_lang and detected_lang != target_lang:
             engine.save_as_srt(segments, output_srt_trans, translate_to=target_lang, original_lang=detected_lang)
-            print(f"[+] Перевод на '{target_lang}' сохранен в: {output_srt_trans}")
-            
+            print(f"[+] Создан переведенный файл субтитров ({target_lang}): {output_srt_trans}")
+
     except Exception as e:
-        print(f"[!] Ошибка: {e}")
+        print(f"[!] Ошибка при обработке ИИ: {e}")
     finally:
-        cleanup()
-        print("[*] Временные файлы очищены.")
+        if os.path.exists("temp_audio.wav"):
+            os.remove("temp_audio.wav")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("source", help="Ссылка на видео (VK/YouTube) или путь к файлу")
-    parser.add_argument("--lang", default=None, help="Язык оригинала видео (по умолчанию: автоопределение)")
-    parser.add_argument("--to_lang", default="ru", help="Язык перевода субтитров (по умолчанию: ru)")
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Universal Subtitler")
+    parser.add_argument("source", help="Ссылка на видео (ВК/Рутуб/YouTube) или путь к локальному файлу")
+    parser.add_argument("--lang", help="Исходный язык видео", default=None)
+    parser.add_argument("--to-lang", help="Язык перевода субтитров (по умолчанию ru)", default="ru")
     
+    args = parser.parse_args()
     process_media(args.source, language=args.lang, target_lang=args.to_lang)
